@@ -122,7 +122,8 @@ enum {
     HW_CFG_DL_MINIDRIVER,
     HW_CFG_DL_FW_PATCH,
     HW_CFG_SET_UART_BAUD_2,
-    HW_CFG_SET_BD_ADDR
+    HW_CFG_SET_BD_ADDR,
+    HW_CFG_DL_FW_PRE_PATCH
 #if (USE_CONTROLLER_BDADDR == TRUE)
     , HW_CFG_READ_BD_ADDR
 #endif
@@ -175,6 +176,7 @@ extern uint8_t vnd_local_bd_addr[BD_ADDR_LEN];
 
 static char fw_patchfile_path[256] = FW_PATCHFILE_LOCATION;
 static char fw_patchfile_name[128] = { 0 };
+static char fw_prepatch_name[384] = FW_PRE_PATCH;
 #if (VENDOR_LIB_RUNTIME_TUNING_ENABLED == TRUE)
 static int fw_patch_settlement_delay = -1;
 #endif
@@ -438,6 +440,7 @@ static uint8_t hw_config_findpatch(char *p_chip_id_str)
     struct dirent *dp;
     int filenamelen;
     uint8_t retval = FALSE;
+    char *prepatch_name;
 
     BTHWDBG("Target name = [%s]", p_chip_id_str);
 
@@ -477,30 +480,35 @@ static uint8_t hw_config_findpatch(char *p_chip_id_str)
                           FW_PATCHFILE_EXTENSION_LEN) \
                      ) == 0))
                 {
-                    ALOGI("Found patchfile: %s/%s", \
-                        fw_patchfile_path, dp->d_name);
+                    /* Make sure it's not the prepatch */
+                    prepatch_name = strrchr(fw_prepatch_name, '/');
+                    if(prepatch_name == NULL || strcmp(++prepatch_name, dp->d_name))
+                    {
+                        ALOGI("Found patchfile: %s/%s", \
+                            fw_patchfile_path, dp->d_name);
 
-                    /* Make sure length does not exceed maximum */
-                    if ((filenamelen + strlen(fw_patchfile_path)) > \
-                         FW_PATCHFILE_PATH_MAXLEN)
-                    {
-                        ALOGE("Invalid patchfile name (too long)");
-                    }
-                    else
-                    {
-                        memset(p_chip_id_str, 0, FW_PATCHFILE_PATH_MAXLEN);
-                        /* Found patchfile. Store location and name */
-                        strcpy(p_chip_id_str, fw_patchfile_path);
-                        if (fw_patchfile_path[ \
-                            strlen(fw_patchfile_path)- 1 \
-                            ] != '/')
+                        /* Make sure length does not exceed maximum */
+                        if ((filenamelen + strlen(fw_patchfile_path)) > \
+                             FW_PATCHFILE_PATH_MAXLEN)
                         {
-                            strcat(p_chip_id_str, "/");
+                            ALOGE("Invalid patchfile name (too long)");
                         }
-                        strcat(p_chip_id_str, dp->d_name);
-                        retval = TRUE;
+                        else
+                        {
+                            memset(p_chip_id_str, 0, FW_PATCHFILE_PATH_MAXLEN);
+                            /* Found patchfile. Store location and name */
+                            strcpy(p_chip_id_str, fw_patchfile_path);
+                            if (fw_patchfile_path[ \
+                                strlen(fw_patchfile_path)- 1 \
+                                ] != '/')
+                            {
+                                strcat(p_chip_id_str, "/");
+                            }
+                            strcat(p_chip_id_str, dp->d_name);
+                            retval = TRUE;
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
@@ -656,6 +664,44 @@ void hw_config_cback(void *p_mem)
                 userial_vendor_set_baud( \
                     line_speed_to_userial_baud(UART_TARGET_BAUD_RATE) \
                 );
+
+                hw_cfg_cb.fw_fd = -1;
+
+                // load the prepatch
+                if (strlen(fw_prepatch_name) &&
+                        (hw_cfg_cb.fw_fd = open(fw_prepatch_name, O_RDONLY)) > -1)
+                {
+                    ALOGI("bt vendor lib: loading prepatch %s", fw_prepatch_name);
+                }
+
+                hw_cfg_cb.state = HW_CFG_DL_FW_PRE_PATCH;
+                // intentional fallthru
+
+            case HW_CFG_DL_FW_PRE_PATCH:
+                if (hw_cfg_cb.fw_fd > -1) {
+                    p_buf->len = read(hw_cfg_cb.fw_fd, p, HCI_CMD_PREAMBLE_SIZE);
+                    if (p_buf->len > 0)
+                    {
+                        if ((p_buf->len < HCI_CMD_PREAMBLE_SIZE) || \
+                            (opcode == HCI_VSC_LAUNCH_RAM))
+                        {
+                            ALOGW("firmware patch file might be altered!");
+                        }
+                        else
+                        {
+                            p_buf->len += read(hw_cfg_cb.fw_fd, \
+                                               p+HCI_CMD_PREAMBLE_SIZE,\
+                                               *(p+HCD_REC_PAYLOAD_LEN_BYTE));
+                            STREAM_TO_UINT16(opcode,p);
+                            is_proceeding = bt_vendor_cbacks->xmit_cb(opcode, \
+                                                    p_buf, hw_config_cback);
+                            break;
+                        }
+                    }
+
+                    close(hw_cfg_cb.fw_fd);
+                    hw_cfg_cb.fw_fd = -1;
+                }
 
                 /* read local name */
                 UINT16_TO_STREAM(p, HCI_READ_LOCAL_NAME);
