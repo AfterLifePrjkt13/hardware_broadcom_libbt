@@ -1612,11 +1612,12 @@ static int hw_set_SCO_codec(uint16_t codec)
         else
         {
             /* Disable mSBC */
-            *p++ = (SCO_CODEC_PARAM_SIZE - 2); /* set the parameter size */
+            *p++ = (SCO_CODEC_PARAM_SIZE); /* set the parameter size */
             UINT8_TO_STREAM(p,0); /* disable */
+            UINT16_TO_STREAM(p,0); /* No need to specify codec info: */
 
             /* set the totall size of this packet */
-            p_buf->len = HCI_CMD_PREAMBLE_SIZE + SCO_CODEC_PARAM_SIZE - 2;
+            p_buf->len = HCI_CMD_PREAMBLE_SIZE + SCO_CODEC_PARAM_SIZE;
 
             p_set_SCO_codec_cback = hw_set_CVSD_codec_cback;
             if ((codec != SCO_CODEC_CVSD) && (codec != SCO_CODEC_NONE))
